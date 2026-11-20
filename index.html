@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>XY Distance CSV Tool</title>
+<style>
+:root{--bg:#f3f5f4;--panel:#fff;--ink:#17211d;--mute:#5d6b65;--line:#d5ddd9;--acc:#0b6b57;--acc-ink:#fff;--edit:#fff3c4;--grp:#e4efeb}
+@media (prefers-color-scheme:dark){:root{--bg:#121816;--panel:#1b2420;--ink:#e6eee9;--mute:#9baba3;--line:#2f3d37;--acc:#3fb596;--acc-ink:#07130f;--edit:#4a4116;--grp:#22322c}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 "Segoe UI","Noto Sans Thai",system-ui,sans-serif;padding:20px}
+.wrap{max-width:860px;margin:0 auto}
+h1{font-size:1.3rem;margin:0 0 14px}
+.bar{display:flex;flex-wrap:wrap;gap:10px;align-items:end;background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:14px;margin-bottom:12px}
+label{display:flex;flex-direction:column;gap:4px;font-size:.85rem;color:var(--mute)}
+input[type=number],input[type=file]{font:inherit;color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:4px;padding:6px 8px}
+input[type=number]{width:90px}
+button{font:inherit;border:1px solid var(--acc);background:var(--acc);color:var(--acc-ink);border-radius:4px;padding:7px 14px;cursor:pointer}
+button.alt{background:transparent;color:var(--acc)}
+button:disabled{opacity:.4;cursor:not-allowed}
+:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+#info{color:var(--mute);margin:6px 2px 12px;min-height:1.4em}
+#info.err{color:#c0392b}
+.tw{background:var(--panel);border:1px solid var(--line);border-radius:6px;overflow-x:auto;max-height:65vh}
+table{border-collapse:collapse;width:100%}
+th,td{padding:5px 10px;text-align:right;border-bottom:1px solid var(--line)}
+th{position:sticky;top:0;background:var(--panel);text-align:right}
+th:first-child,td:first-child{text-align:left}
+tr.g td{background:var(--grp);font-weight:600;text-align:left}
+td input{width:110px;text-align:right;font:inherit;color:var(--ink);background:transparent;border:1px solid transparent;border-radius:3px;padding:3px 6px}
+td input:hover{border-color:var(--line)}
+td input.chg{background:var(--edit);border-color:var(--line)}
+.num{font-variant-numeric:tabular-nums}
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>XY Distance — ดึงค่า แก้ไข และส่งออก CSV</h1>
+<div class="bar">
+  <label>ไฟล์ CSV ต้นฉบับ<input type="file" id="file" accept=".csv,.txt"></label>
+  <label>จำนวนแถวต่อ Group (Subgroup)<input type="number" id="gs" min="1" value="5"></label>
+  <button id="btnAdj" disabled>Adjust Value CSV</button>
+  <button id="btnExp" class="alt" disabled>Export CSV</button>
+</div>
+<div id="info">เลือกไฟล์ CSV เพื่อเริ่มต้น</div>
+<div class="tw"><table id="tbl"><thead><tr><th>Group / แถว</th><th>X (mm)</th><th>Y (mm)</th></tr></thead><tbody></tbody></table></div>
+</div>
+
+<script>
+const NUM = /[+-]?\d+(?:\.\d+)?/g;
+let lines = [], eol = [], bom = false, fname = 'data.csv';
+let rows = []; // {xi, yi, x0, y0, x, y}  (xi/yi = line index)
+
+const $ = id => document.getElementById(id);
+const info = (t, err) => { $('info').textContent = t; $('info').className = err ? 'err' : ''; };
+
+// หาค่าตัวเลขตัวที่ 2 ในบรรทัดที่มี label (ไม่นับตัวเลขในชื่อ label)
+function findSecond(line, re) {
+  const m = re.exec(line);
+  if (!m) return null;
+  const start = m.index + m[0].length;
+  const rest = line.slice(start);
+  const nums = [...rest.matchAll(NUM)];
+  if (nums.length < 2) return null;
+  const n = nums[1];
+  return { pos: start + n.index, text: n[0] };
+}
+
+function load(buf) {
+  const u = new Uint8Array(buf);
+  bom = u[0] === 0xEF && u[1] === 0xBB && u[2] === 0xBF;
+  const text = new TextDecoder('utf-8').decode(u.subarray(bom ? 3 : 0));
+  const parts = text.split(/(\r\n|\n|\r)/);
+  lines = []; eol = [];
+  for (let i = 0; i < parts.length; i += 2) { lines.push(parts[i]); eol.push(parts[i + 1] || ''); }
+
+  const xs = [], ys = [];
+  lines.forEach((ln, i) => {
+    const x = findSecond(ln, /\bX\s*Distance\b/i);
+    if (x) xs.push({ i, ...x });
+    const y = findSecond(ln, /\bY\s*Distance\b/i);
+    if (y) ys.push({ i, ...y });
+  });
+  const n = Math.min(xs.length, ys.length);
+  rows = [];
+  for (let k = 0; k < n; k++) {
+    rows.push({ xi: xs[k].i, xp: xs[k].pos, xt: xs[k].text,
+                yi: ys[k].i, yp: ys[k].pos, yt: ys[k].text,
+                x: xs[k].text, y: ys[k].text });
+  }
+  if (!n) { info('ไม่พบบรรทัด "X Distance" / "Y Distance" ที่มีค่าอย่างน้อย 2 ค่า', true); }
+  else info(`พบข้อมูล ${n} ชุด` + (xs.length !== ys.length ? ` (X ${xs.length} บรรทัด, Y ${ys.length} บรรทัด — จับคู่ตามลำดับ)` : ''));
+  $('btnAdj').disabled = $('btnExp').disabled = !n;
+  render();
+}
+
+function render() {
+  const gs = Math.max(1, parseInt($('gs').value) || 1);
+  const tb = $('tbl').tBodies[0];
+  tb.innerHTML = '';
+  rows.forEach((r, k) => {
+    if (k % gs === 0) {
+      const g = document.createElement('tr'); g.className = 'g';
+      const last = Math.min(k + gs, rows.length);
+      g.innerHTML = `<td colspan="3">Group ${k / gs + 1} (แถว ${k + 1}–${last})</td>`;
+      tb.appendChild(g);
+    }
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${k + 1}</td><td><input class="num" data-k="${k}" data-f="x"></td><td><input class="num" data-k="${k}" data-f="y"></td>`;
+    tb.appendChild(tr);
+    tr.querySelectorAll('input').forEach(inp => {
+      inp.value = r[inp.dataset.f];
+      mark(inp, r);
+      inp.addEventListener('input', () => { r[inp.dataset.f] = inp.value.trim(); mark(inp, r); });
+    });
+  });
+}
+function mark(inp, r) {
+  const f = inp.dataset.f;
+  inp.classList.toggle('chg', r[f] !== r[f + 't'] && Number(r[f]) !== Number(r[f + 't']) || (r[f] !== r[f + 't'] && isNaN(Number(r[f]))));
+}
+
+// จัดรูปแบบค่าใหม่ให้เหมือนต้นฉบับ (เครื่องหมาย + และทศนิยม)
+function fmt(orig, val) {
+  const v = Number(val);
+  if (val === '' || isNaN(v)) return orig;
+  const od = (orig.split('.')[1] || '').length;
+  const nd = (val.split('.')[1] || '').length;
+  let s = Math.abs(v).toFixed(Math.max(od, nd));
+  const neg = v < 0 || Object.is(v, -0);
+  const plus = orig[0] === '+';
+  return (neg ? '-' : plus ? '+' : '') + s;
+}
+
+function download(name, parts) {
+  const blob = new Blob(parts, { type: 'text/csv;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+$('file').addEventListener('change', e => {
+  const f = e.target.files[0]; if (!f) return;
+  fname = f.name;
+  const rd = new FileReader();
+  rd.onload = () => load(rd.result);
+  rd.readAsArrayBuffer(f);
+});
+$('gs').addEventListener('input', render);
+
+$('btnAdj').addEventListener('click', () => {
+  const out = lines.slice();
+  // แก้จากท้ายบรรทัดมาหน้า เพื่อไม่ให้ตำแหน่งเลื่อน
+  const edits = [];
+  rows.forEach(r => {
+    if (r.x !== r.xt) edits.push({ i: r.xi, p: r.xp, old: r.xt, nw: fmt(r.xt, r.x) });
+    if (r.y !== r.yt) edits.push({ i: r.yi, p: r.yp, old: r.yt, nw: fmt(r.yt, r.y) });
+  });
+  edits.sort((a, b) => a.i - b.i || b.p - a.p);
+  edits.forEach(e => { out[e.i] = out[e.i].slice(0, e.p) + e.nw + out[e.i].slice(e.p + e.old.length); });
+  let text = out.map((l, i) => l + eol[i]).join('');
+  const base = fname.replace(/\.[^.]+$/, '');
+  download(base + '_adjusted.csv', [bom ? new Uint8Array([0xEF, 0xBB, 0xBF]) : '', text]);
+  info(`ส่งออก ${base}_adjusted.csv แล้ว (แก้ไข ${edits.length} ค่า)`);
+});
+
+$('btnExp').addEventListener('click', () => {
+  const gs = Math.max(1, parseInt($('gs').value) || 1);
+  const q = v => String(Number(v));
+  // A = Group, B = X, C = Y  (ข้อมูล X,Y เริ่มที่ B2:C2)
+  let csv = 'Group,X,Y\r\n';
+  rows.forEach((r, k) => { csv += `${Math.floor(k / gs) + 1},${q(r.x)},${q(r.y)}\r\n`; });
+  download(fname.replace(/\.[^.]+$/, '') + '_XY.csv', [new Uint8Array([0xEF, 0xBB, 0xBF]), csv]);
+  info(`ส่งออก X,Y ${rows.length} แถว (B2:C${rows.length + 1})`);
+});
+</script>
+</body>
+</html>
